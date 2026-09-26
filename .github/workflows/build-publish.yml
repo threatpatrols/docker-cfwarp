@@ -1,6 +1,14 @@
 name: Build and publish Docker image
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'Dockerfile'
+      - 'entrypoint.sh'
+      - 'healthcheck/**'
+      - '.github/workflows/build-publish.yml'
   workflow_dispatch:
     inputs:
       GOST_VERSION:
