@@ -18,8 +18,8 @@ if [ -f /run/dbus/pid ]; then
 fi
 sudo dbus-daemon --config-file=/usr/share/dbus-1/system.conf
 
-# start the daemon
-sudo warp-svc --accept-tos &
+# start the warp-svc daemon with noise reduction
+sudo warp-svc --accept-tos | sed -e 's/\x1b\[[0-9;]*m//g' | grep -v DEBUG | grep -v NewNeighbour | grep -v MasqueTunnelStatsMessage &
 
 # sleep to wait for the daemon to start, default 2 seconds
 sleep "$WARP_SLEEP"

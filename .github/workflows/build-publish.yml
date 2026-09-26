@@ -4,108 +4,111 @@ on:
   workflow_dispatch:
     inputs:
       GOST_VERSION:
+        # https://github.com/ginuerzh/gost/releases
         description: "Version of gost. If empty, the latest version will be used."
         required: false
         type: string
 
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        variants:
+          - base_image: debian:13-slim
+            suite: trixie
+            tag_suffix: ""
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Compute image name
+        id: image
+        run: echo "name=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-        with:
-          image: tonistiigi/binfmt:qemu-v7.0.0
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
-      - name: Log into registry ${{ vars.REGISTRY }}
-        uses: docker/login-action@343f7c4344506bcbf9b4de18042ae17996df046d # v3.0.0
+      - name: Log into registry ${{ env.REGISTRY }}
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
-          registry: ${{ vars.REGISTRY }}
-          username: ${{ vars.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Get gost version
         id: get-gost-version
+        env:
+          INPUT_GOST_VERSION: ${{ inputs.GOST_VERSION }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ -z "${{ github.event.inputs.GOST_VERSION }}" ]; then
-            echo "GOST_VERSION=$(curl -H 'authorization: Bearer ${{ secrets.GITHUB_TOKEN }}' -s https://api.github.com/repos/ginuerzh/gost/releases/latest | jq -r '.tag_name' | cut -c 2-)" >> "$GITHUB_OUTPUT"
+          if [ -z "$INPUT_GOST_VERSION" ]; then
+            GOST_VERSION=$(curl --fail --silent --show-error \
+              -H "authorization: Bearer ${GH_TOKEN}" \
+              https://api.github.com/repos/ginuerzh/gost/releases/latest \
+              | jq -r '.tag_name' | cut -c 2-)
           else
-            echo "GOST_VERSION=${{ github.event.inputs.GOST_VERSION }}" >> "$GITHUB_OUTPUT"
+            GOST_VERSION="$INPUT_GOST_VERSION"
           fi
+          echo "GOST_VERSION=${GOST_VERSION}" >> "$GITHUB_OUTPUT"
 
       # gost version must be <number>.<number>.<number>
       - name: Verify gost version
-        id: verify-gost-version
+        env:
+          GOST_VERSION: ${{ steps.get-gost-version.outputs.GOST_VERSION }}
         run: |
-          if [[ ! "${{ steps.get-gost-version.outputs.GOST_VERSION }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Invalid gost version: ${{ steps.get-gost-version.outputs.GOST_VERSION }}"
+          if [[ ! "$GOST_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid gost version: $GOST_VERSION"
             exit 1
           fi
 
       - name: Get WARP client version
         id: get-warp-client-version
+        env:
+          SUITE: ${{ matrix.variants.suite }}
         run: |
           curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
-          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
+          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ ${SUITE} main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
           sudo apt-get update
           echo "WARP_VERSION=$(apt-cache show cloudflare-warp | grep '^Version:' | awk '{print $2}' | sed 's/-[0-9]*$//')" >> "$GITHUB_OUTPUT"
 
+      # WARP client version must be <number>.<number>.<number>.<number>
+      - name: Verify WARP client version
+        env:
+          WARP_VERSION: ${{ steps.get-warp-client-version.outputs.WARP_VERSION }}
+        run: |
+          if [[ ! "$WARP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid WARP client version: $WARP_VERSION"
+            exit 1
+          fi
+
       - name: Build and push
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           build-args: |
             GOST_VERSION=${{ steps.get-gost-version.outputs.GOST_VERSION }}
             WARP_VERSION=${{ steps.get-warp-client-version.outputs.WARP_VERSION }}
             COMMIT_SHA=${{ github.sha }}
-            
+            BASE_IMAGE=${{ matrix.variants.base_image }}
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ${{ vars.REGISTRY }}/${{ vars.IMAGE_NAME }}:latest
-            ${{ vars.REGISTRY }}/${{ vars.IMAGE_NAME }}:${{ steps.get-warp-client-version.outputs.WARP_VERSION }}-${{ steps.get-gost-version.outputs.GOST_VERSION }}
-            ${{ vars.REGISTRY }}/${{ vars.IMAGE_NAME }}:${{ steps.get-warp-client-version.outputs.WARP_VERSION }}-${{ steps.get-gost-version.outputs.GOST_VERSION }}-${{ github.sha }}
-
-      - name: Build and push slim variant
-        uses: docker/build-push-action@v5
-        with:
-          build-args: |
-            GOST_VERSION=${{ steps.get-gost-version.outputs.GOST_VERSION }}
-            WARP_VERSION=${{ steps.get-warp-client-version.outputs.WARP_VERSION }}
-            COMMIT_SHA=${{ github.sha }}
-            BASE_IMAGE=debian:bookworm-slim
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            ${{ vars.REGISTRY }}/${{ vars.IMAGE_NAME }}:slim-latest
-            ${{ vars.REGISTRY }}/${{ vars.IMAGE_NAME }}:slim-${{ steps.get-warp-client-version.outputs.WARP_VERSION }}-${{ steps.get-gost-version.outputs.GOST_VERSION }}
-            ${{ vars.REGISTRY }}/${{ vars.IMAGE_NAME }}:slim-${{ steps.get-warp-client-version.outputs.WARP_VERSION }}-${{ steps.get-gost-version.outputs.GOST_VERSION }}-${{ github.sha }}
-
-      - name: Update WARP version badge
-        if: github.repository == 'cmj2002/warp-docker'
-        uses: Schneegans/dynamic-badges-action@v1.9.0
-        with:
-          auth: ${{ secrets.GIST_TOKEN }}
-          gistID: 3be8f0c02363f9e98dd3048b5174765a
-          filename: warp-version-badge.json
-          label: WARP in image
-          message: ${{ steps.get-warp-client-version.outputs.WARP_VERSION }}
-          color: blue
-
-      - name: Update GOST version badge
-        if: github.repository == 'cmj2002/warp-docker'
-        uses: Schneegans/dynamic-badges-action@v1.9.0
-        with:
-          auth: ${{ secrets.GIST_TOKEN }}
-          gistID: 3be8f0c02363f9e98dd3048b5174765a
-          filename: gost-version-badge.json
-          label: GOST in image
-          message: ${{ steps.get-gost-version.outputs.GOST_VERSION }}
-          color: blue
+            ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}:${{ matrix.variants.tag_suffix }}latest
+            ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}:${{ matrix.variants.tag_suffix }}${{ steps.get-warp-client-version.outputs.WARP_VERSION }}-${{ steps.get-gost-version.outputs.GOST_VERSION }}
+            ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}:${{ matrix.variants.tag_suffix }}${{ steps.get-warp-client-version.outputs.WARP_VERSION }}-${{ steps.get-gost-version.outputs.GOST_VERSION }}-${{ github.sha }}

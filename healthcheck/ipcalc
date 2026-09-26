@@ -1,0 +1,75 @@
+#!/bin/sh
+#
+# Minimal, dependency-free replacement for the perl `ipcalc` used by
+# healthcheck/fix-host-connectivity.sh.
+#
+# Only the behaviour that the healthcheck relies on is implemented:
+#
+#     ipcalc -n <address>/<prefix>   ->   Network:   <network>/<prefix>
+#
+# The `Network:` output line is kept so the existing
+# `ipcalc -n ... | grep Network | awk '{print $2}'` pipeline is unchanged.
+
+set -e
+
+usage() {
+    echo "usage: ipcalc -n <address>/<prefix>" >&2
+    exit 1
+}
+
+[ "$1" = "-n" ] || usage
+[ $# -eq 2 ] || usage
+
+cidr=$2
+
+# a bare address is treated as a /32
+case $cidr in
+    */*) ;;
+    *) cidr="$cidr/32" ;;
+esac
+
+addr=${cidr%/*}
+prefix=${cidr#*/}
+
+case $prefix in
+    ''|*[!0-9]*) usage ;;
+esac
+[ "$prefix" -ge 0 ] && [ "$prefix" -le 32 ] || usage
+
+# split the dotted-quad
+o1=${addr%%.*}
+rest=${addr#*.}
+o2=${rest%%.*}
+rest=${rest#*.}
+o3=${rest%%.*}
+rest=${rest#*.}
+o4=$rest
+case $o4 in
+    *.*) usage ;;
+esac
+
+for oct in "$o1" "$o2" "$o3" "$o4"; do
+    case $oct in
+        ''|*[!0-9]*) usage ;;
+    esac
+    [ "$oct" -ge 0 ] && [ "$oct" -le 255 ] || usage
+done
+
+num=$(( (o1 << 24) | (o2 << 16) | (o3 << 8) | o4 ))
+if [ "$prefix" -eq 0 ]; then
+    mask=0
+else
+    mask=$(( (0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF ))
+fi
+net=$(( num & mask ))
+
+# classic ipcalc reports a /32 as a host route rather than a network
+if [ "$prefix" -eq 32 ]; then
+    printf 'Hostroute: %d.%d.%d.%d\n' \
+        $(( (net >> 24) & 255 )) $(( (net >> 16) & 255 )) \
+        $(( (net >> 8) & 255 )) $(( net & 255 ))
+else
+    printf 'Network:   %d.%d.%d.%d/%d\n' \
+        $(( (net >> 24) & 255 )) $(( (net >> 16) & 255 )) \
+        $(( (net >> 8) & 255 )) $(( net & 255 )) "$prefix"
+fi
