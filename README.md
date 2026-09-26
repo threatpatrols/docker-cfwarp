@@ -1,10 +1,17 @@
 # docker-cfwarp
 
-Run [Cloudflare WARP](https://1.1.1.1/) in Docker and expose a
-SOCKS5/HTTP proxy using [GOST](https://github.com/ginuerzh/gost).
+Run [Cloudflare WARP](https://1.1.1.1/) in Docker, route docker service traffic via Cloudflare WARP acting as NAT and expose a
+SOCKS5/HTTP proxy using [GOST](https://github.com/ginuerzh/gost)
 
-Fork of [cmj2002/warp-docker](https://github.com/cmj2002/warp-docker), built as a
-small multistage Debian slim image.
+This is a fork of the very awesome [cmj2002/warp-docker](https://github.com/cmj2002/warp-docker) with small improvements and packaged as a smaller image.
+
+## Docker Pull
+```shell
+docker pull ghcr.io/threatpatrols/docker-cfwarp:latest
+```
+
+## Github Container Repo
+* https://github.com/threatpatrols/docker-cfwarp/pkgs/container/docker-cfwarp
 
 ## Usage
 
@@ -81,4 +88,4 @@ docker build -t docker-cfwarp .
 ## Further reading
 
 - [docs/](docs/README.md)
-- How it works: [blog post](https://blog.caomingjun.com/run-cloudflare-warp-in-docker/en/#How-it-works).
+- How it works from the original author Caomingjun: [blog post](https://blog.caomingjun.com/run-cloudflare-warp-in-docker/en/#How-it-works).
