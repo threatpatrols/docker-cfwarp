@@ -1,3 +1,5 @@
+# Multi-stage build: fetch the cloudflare-warp .deb and the gost binary, then
+# assemble a minimal debian slim runtime image.
 ARG BASE_IMAGE=debian:13-slim
 
 # Stage 1: download the cloudflare-warp .deb for the target architecture.
