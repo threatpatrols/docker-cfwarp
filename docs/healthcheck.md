@@ -1,6 +1,8 @@
 # Health check
 
-The health check of the container will verify if the WARP client inside the container is working properly. If the check fails, the container will automatically restart. Specifically, 10 seconds after starting, a check will be performed every 15 seconds. If the inspection fails for 3 consecutive times, the container will be marked as unhealthy and trigger an automatic restart.
+The health check of the container will verify if the WARP client inside the container is working properly. Specifically, 10 seconds after starting, a check will be performed every 15 seconds. If the inspection fails for 3 consecutive times, the container will be marked as unhealthy.
+
+Note that Docker restart policies act on container **exit**, not on health status, so an unhealthy container is not restarted by Docker by itself. Recovery comes from the entrypoint supervisor: if the `warp-svc` daemon or the `gost` proxy dies, or if the WARP egress check (`healthcheck/connected-to-warp.sh`) fails `EGRESS_FAIL_THRESHOLD` consecutive times (default `8`, roughly 2 minutes; set `0` to disable the watchdog), the supervisor exits the container and the restart policy brings it back up. Registration is persisted in the data volume, so the restart only costs daemon start + connect.
 
 By default, the health check only checks if the WARP client is running. Sometime you may face a [host connectivity issue](host-connectivity.md), which is not covered by the default health check. If `BETA_FIX_HOST_CONNECTIVITY=1` is passed, host connectivity check will be added to the health check. If the check fails, the container will automatically fix it. This may prevent you from accessing certain intranet services of your organization, as the docker network subnet may conflict with the addresses of these services. This is a beta feature and may not work in all cases. If you encounter any issues, please report them.
 

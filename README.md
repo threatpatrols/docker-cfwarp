@@ -67,6 +67,7 @@ If the output contains `warp=on` or `warp=plus`, WARP is connected.
 - `WARP_ENABLE_NAT` - set to run as a NAT gateway.
 - `BETA_FIX_HOST_CONNECTIVITY` - set to add host-connectivity checks and fixes.
 - `REGISTER_WHEN_MDM_EXISTS` - set to register a consumer account even when `mdm.xml` exists.
+- `EGRESS_FAIL_THRESHOLD` - number of consecutive failed egress checks before the entrypoint supervisor exits the container so the restart policy recovers it (default `8`, roughly 2 minutes; `0` disables the watchdog). Without this, a dead or wedged `warp-svc` would leave a running but unhealthy container since Docker restart policies act on container exit, not health status.
 
 Data is persisted in the `./data` volume. Delete it to re-register, for example after
 changing `WARP_LICENSE_KEY`.

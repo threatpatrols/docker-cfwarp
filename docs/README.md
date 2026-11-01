@@ -3,6 +3,7 @@
 This directory contains advanced usage and configurations of the project. Below is a brief introduction to each document:
 
 - [healthcheck.md](healthcheck.md): Describes the health check mechanism for the container and its configuration.
+- [nat-gateway.md](nat-gateway.md): Route traffic through the container as a NAT gateway instead of using the SOCKS5 proxy.
 - [host-connectivity.md](host-connectivity.md): Discusses potential host connectivity issue when using Zero Trust and provides three solutions.
 - [warp-connector.md](warp-connector.md): Provides steps and a sample Docker Compose file for setting up the WARP Connector.
 - [zero-trust.md](zero-trust.md): Details the steps to use the WARP client with Cloudflare Zero Trust.

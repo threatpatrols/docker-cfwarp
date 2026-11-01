@@ -126,6 +126,9 @@ ENV WARP_SLEEP=2
 ENV REGISTER_WHEN_MDM_EXISTS=
 ENV BETA_FIX_HOST_CONNECTIVITY=
 ENV WARP_ENABLE_NAT=
+# consecutive failed egress checks before the supervisor exits so the container
+# restart policy recovers; 0 disables the egress watchdog
+ENV EGRESS_FAIL_THRESHOLD=8
 
 HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
   CMD /healthcheck/index.sh
