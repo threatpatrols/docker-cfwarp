@@ -18,9 +18,11 @@ Create a new healthcheck script `new-healthcheck.sh` with content:
 ```bash
 #!/bin/bash
 
-curl -fsS --socks5-hostname 127.0.0.1:1080 "https://cloudflare.com/cdn-cgi/trace" | grep -qE "warp=(plus|on)" || exit 1
+curl -fsS --max-time 4 --socks5-hostname 127.0.0.1:1080 "https://cloudflare.com/cdn-cgi/trace" | grep -qE "warp=(plus|on)" || exit 1
 exit 0
 ```
+
+Note: the entrypoint's egress watchdog (`EGRESS_FAIL_THRESHOLD`) runs this same script, so keep the mount in place. Without it the check fails on every run and keeps restarting the container; alternatively set `EGRESS_FAIL_THRESHOLD=0` to disable the watchdog.
 
 Update the `docker-compose.yml` file:
 1. set env `GOST_ARGS` to `-L :1080 -F=127.0.0.1:40000`
