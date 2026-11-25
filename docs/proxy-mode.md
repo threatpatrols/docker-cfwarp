@@ -31,11 +31,9 @@ Update the `docker-compose.yml` file:
 For example, the default `docker-compose.yml` file will be changed to:
 
 ```yaml
-version: "3"
-
 services:
   warp:
-    image: caomingjun/warp
+    image: ghcr.io/threatpatrols/docker-cfwarp:latest
     container_name: warp
     restart: always
     # add removed rule back (https://github.com/opencontainers/runc/pull/3468)
@@ -61,4 +59,4 @@ services:
       - ./new-healthcheck.sh:/healthcheck/connected-to-warp.sh
 ```
 
-After updating the `docker-compose.yml` file, run `docker-compose down && docker-compose up -d` to restart the container.
+After updating the `docker-compose.yml` file, run `docker compose down && docker compose up -d` to restart the container.

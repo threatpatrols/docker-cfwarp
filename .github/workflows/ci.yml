@@ -1,0 +1,134 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+    paths:
+      - 'tests/**'
+      - 'docs/**'
+      - 'README.md'
+      - 'docker-compose.yml'
+      - '.github/workflows/ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static:
+    name: Static & regression tests
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Ensure shellcheck is installed
+        run: |
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends shellcheck
+          fi
+
+      - name: Run static unit & regression tests
+        env:
+          REQUIRE_SHELLCHECK: "1"
+        run: ./tests/run.sh static
+
+  build-test:
+    name: Build & image artifact tests
+    # On push to main, build-publish.yml already runs the build gate when Docker
+    # or runtime files change; run build-test here for PRs and manual dispatches.
+    if: github.event_name != 'push'
+    needs: static
+    runs-on: ubuntu-26.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        variants:
+          - base_image: debian:13-slim
+            suite: trixie
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Resolve gost version
+        id: get-gost-version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          GOST_VERSION=$(curl --fail --silent --show-error --retry 3 --retry-delay 2 \
+            -H "authorization: Bearer ${GH_TOKEN}" \
+            https://api.github.com/repos/ginuerzh/gost/releases/latest \
+            | jq -r '.tag_name' | sed 's/^v//')
+          if [[ ! "$GOST_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid gost version: $GOST_VERSION" >&2
+            exit 1
+          fi
+          echo "GOST_VERSION=${GOST_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve WARP client version
+        id: get-warp-client-version
+        env:
+          SUITE: ${{ matrix.variants.suite }}
+        run: |
+          curl -fsSL --retry 3 --retry-delay 2 https://pkg.cloudflareclient.com/pubkey.gpg \
+            | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ ${SUITE} main" \
+            | sudo tee /etc/apt/sources.list.d/cloudflare-client.list >/dev/null
+          sudo apt-get update \
+            -o Dir::Etc::sourcelist="sources.list.d/cloudflare-client.list" \
+            -o Dir::Etc::sourceparts="-" \
+            -o APT::Get::List-Cleanup="0"
+          WARP_VERSION=$(apt-cache show cloudflare-warp | awk '/^Version:/ {print $2; exit}' | sed 's/-[0-9]*$//')
+          if [[ ! "$WARP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid WARP client version: $WARP_VERSION" >&2
+            exit 1
+          fi
+          echo "WARP_VERSION=${WARP_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Build linux/amd64 image for inspection
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: docker-cfwarp:ci-test
+          build-args: |
+            GOST_VERSION=${{ steps.get-gost-version.outputs.GOST_VERSION }}
+            WARP_VERSION=${{ steps.get-warp-client-version.outputs.WARP_VERSION }}
+            COMMIT_SHA=${{ github.sha }}
+            BASE_IMAGE=${{ matrix.variants.base_image }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max,ignore-error=true
+
+      - name: Run image artifact tests (no live WARP daemon)
+        run: ./tests/run.sh build --image docker-cfwarp:ci-test --skip-build
+
+      - name: Verify multi-arch build (linux/amd64 + linux/arm64)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          build-args: |
+            GOST_VERSION=${{ steps.get-gost-version.outputs.GOST_VERSION }}
+            WARP_VERSION=${{ steps.get-warp-client-version.outputs.WARP_VERSION }}
+            COMMIT_SHA=${{ github.sha }}
+            BASE_IMAGE=${{ matrix.variants.base_image }}
+          cache-from: type=gha

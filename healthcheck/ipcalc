@@ -34,26 +34,42 @@ prefix=${cidr#*/}
 case $prefix in
     ''|*[!0-9]*) usage ;;
 esac
+# strip leading zeros so POSIX arithmetic never treats values as octal
+while [ "${#prefix}" -gt 1 ] && [ "${prefix#0}" != "$prefix" ]; do
+    prefix=${prefix#0}
+done
 [ "$prefix" -ge 0 ] && [ "$prefix" -le 32 ] || usage
 
 # split the dotted-quad
 o1=${addr%%.*}
 rest=${addr#*.}
+[ "$rest" != "$addr" ] || usage
 o2=${rest%%.*}
-rest=${rest#*.}
-o3=${rest%%.*}
-rest=${rest#*.}
-o4=$rest
+rest2=${rest#*.}
+[ "$rest2" != "$rest" ] || usage
+o3=${rest2%%.*}
+o4=${rest2#*.}
+[ "$o4" != "$rest2" ] || usage
 case $o4 in
     *.*) usage ;;
 esac
 
-for oct in "$o1" "$o2" "$o3" "$o4"; do
-    case $oct in
+strip_oct() {
+    v=$1
+    case $v in
         ''|*[!0-9]*) usage ;;
     esac
-    [ "$oct" -ge 0 ] && [ "$oct" -le 255 ] || usage
-done
+    while [ "${#v}" -gt 1 ] && [ "${v#0}" != "$v" ]; do
+        v=${v#0}
+    done
+    [ "$v" -ge 0 ] && [ "$v" -le 255 ] || usage
+    printf '%s' "$v"
+}
+
+o1=$(strip_oct "$o1")
+o2=$(strip_oct "$o2")
+o3=$(strip_oct "$o3")
+o4=$(strip_oct "$o4")
 
 num=$(( (o1 << 24) | (o2 << 16) | (o3 << 8) | o4 ))
 if [ "$prefix" -eq 0 ]; then

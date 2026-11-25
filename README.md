@@ -61,13 +61,17 @@ If the output contains `warp=on` or `warp=plus`, WARP is connected.
 
 ## Configuration
 
-- `WARP_SLEEP` - seconds to wait for the WARP daemon to start (default `2`).
+- `WARP_SLEEP` - minimum seconds to wait for the WARP daemon to start before polling its IPC socket (default `2`).
 - `GOST_ARGS` - arguments passed to GOST (default `-L :1080`).
 - `WARP_LICENSE_KEY` - optional WARP+ license key.
 - `WARP_ENABLE_NAT` - set to run as a NAT gateway.
 - `BETA_FIX_HOST_CONNECTIVITY` - set to add host-connectivity checks and fixes.
 - `REGISTER_WHEN_MDM_EXISTS` - set to register a consumer account even when `mdm.xml` exists.
-- `EGRESS_FAIL_THRESHOLD` - number of consecutive failed egress checks before the entrypoint supervisor exits the container so the restart policy recovers it (default `8`, roughly 35-70 seconds at the supervisor's 5-second loop; `0` disables the watchdog). Without this, a dead or wedged `warp-svc` would leave a running but unhealthy container since Docker restart policies act on container exit, not health status.
+- `DEBUG_ENABLE_QLOG` - set to enable WARP QLog debugging output (disabled by default to avoid excessive disk usage).
+- `EGRESS_FAIL_THRESHOLD` - number of consecutive failed egress checks before the entrypoint supervisor exits the container so the restart policy recovers it (default `8`, roughly 35-70 seconds of consecutive failures at the default 5-second check interval; `0` disables the watchdog). Without this, a dead or wedged `warp-svc` would leave a running but unhealthy container since Docker restart policies act on container exit, not health status.
+- `EGRESS_CHECK_INTERVAL` - seconds between supervisor egress checks (default `5`; process liveness for `warp-svc` and `gost` is still checked every 5 seconds).
+- `EGRESS_GRACE_PERIOD` - seconds after starting `gost` before the supervisor begins egress checks (default `15`; `0` disables the startup grace period).
+- `WARP_TRACE_URL` - trace endpoint queried by the healthcheck and supervisor egress watchdog (default `https://cloudflare.com/cdn-cgi/trace`, e.g. set `https://1.1.1.1/cdn-cgi/trace` to avoid DNS lookups).
 
 Data is persisted in the `./data` volume. Delete it to re-register, for example after
 changing `WARP_LICENSE_KEY`.
@@ -84,6 +88,18 @@ locally:
 
 ```bash
 docker build -t docker-cfwarp .
+```
+
+## Testing
+
+Development and build tests live in [tests/](tests/README.md):
+
+```bash
+# Fast offline static/unit checks + Docker build & image verification
+./tests/run.sh
+
+# Full suite including live WARP container integration tests
+./tests/run.sh all
 ```
 
 ## Further reading

@@ -13,13 +13,21 @@ on:
     inputs:
       GOST_VERSION:
         # https://github.com/ginuerzh/gost/releases
-        description: "Version of gost. If empty, the latest version will be used."
+        description: "Version of gost (e.g. 2.12.0). If empty, the latest version will be used."
         required: false
         type: string
+      WARP_VERSION:
+        description: "Version of cloudflare-warp (e.g. 2026.8.2115.0). If empty, the latest version will be used."
+        required: false
+        type: string
+      DRY_RUN:
+        description: "Build and test without pushing to GHCR."
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
-  packages: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -29,8 +37,34 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
-  build:
+  static:
+    name: Static & regression tests
     runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Ensure shellcheck is installed
+        run: |
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends shellcheck
+          fi
+
+      - name: Run static unit & regression tests
+        env:
+          REQUIRE_SHELLCHECK: "1"
+        run: ./tests/run.sh static
+
+  build:
+    name: Build, verify & publish
+    needs: static
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
     strategy:
       fail-fast: false
       matrix:
@@ -44,7 +78,9 @@ jobs:
 
       - name: Compute image name
         id: image
-        run: echo "name=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+        env:
+          REPO: ${{ github.repository }}
+        run: echo "name=$(printf '%s' "$REPO" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
@@ -52,60 +88,79 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
-      - name: Log into registry ${{ env.REGISTRY }}
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Get gost version
+      - name: Resolve gost version
         id: get-gost-version
         env:
           INPUT_GOST_VERSION: ${{ inputs.GOST_VERSION }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ -z "$INPUT_GOST_VERSION" ]; then
-            GOST_VERSION=$(curl --fail --silent --show-error \
+            GOST_VERSION=$(curl --fail --silent --show-error --retry 3 --retry-delay 2 \
               -H "authorization: Bearer ${GH_TOKEN}" \
               https://api.github.com/repos/ginuerzh/gost/releases/latest \
-              | jq -r '.tag_name' | cut -c 2-)
+              | jq -r '.tag_name' | sed 's/^v//')
           else
-            GOST_VERSION="$INPUT_GOST_VERSION"
+            GOST_VERSION="${INPUT_GOST_VERSION#v}"
+          fi
+          if [[ ! "$GOST_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid gost version: $GOST_VERSION" >&2
+            exit 1
           fi
           echo "GOST_VERSION=${GOST_VERSION}" >> "$GITHUB_OUTPUT"
 
-      # gost version must be <number>.<number>.<number>
-      - name: Verify gost version
-        env:
-          GOST_VERSION: ${{ steps.get-gost-version.outputs.GOST_VERSION }}
-        run: |
-          if [[ ! "$GOST_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Invalid gost version: $GOST_VERSION"
-            exit 1
-          fi
-
-      - name: Get WARP client version
+      - name: Resolve WARP client version
         id: get-warp-client-version
         env:
+          INPUT_WARP_VERSION: ${{ inputs.WARP_VERSION }}
           SUITE: ${{ matrix.variants.suite }}
         run: |
-          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
-          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ ${SUITE} main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
-          sudo apt-get update
-          echo "WARP_VERSION=$(apt-cache show cloudflare-warp | grep '^Version:' | awk '{print $2}' | sed 's/-[0-9]*$//')" >> "$GITHUB_OUTPUT"
-
-      # WARP client version must be <number>.<number>.<number>.<number>
-      - name: Verify WARP client version
-        env:
-          WARP_VERSION: ${{ steps.get-warp-client-version.outputs.WARP_VERSION }}
-        run: |
+          if [ -z "$INPUT_WARP_VERSION" ]; then
+            curl -fsSL --retry 3 --retry-delay 2 https://pkg.cloudflareclient.com/pubkey.gpg \
+              | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+            echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ ${SUITE} main" \
+              | sudo tee /etc/apt/sources.list.d/cloudflare-client.list >/dev/null
+            sudo apt-get update \
+              -o Dir::Etc::sourcelist="sources.list.d/cloudflare-client.list" \
+              -o Dir::Etc::sourceparts="-" \
+              -o APT::Get::List-Cleanup="0"
+            WARP_VERSION=$(apt-cache show cloudflare-warp | awk '/^Version:/ {print $2; exit}' | sed 's/-[0-9]*$//')
+          else
+            WARP_VERSION="$INPUT_WARP_VERSION"
+          fi
           if [[ ! "$WARP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Invalid WARP client version: $WARP_VERSION"
+            echo "Invalid WARP client version: $WARP_VERSION" >&2
             exit 1
           fi
+          echo "WARP_VERSION=${WARP_VERSION}" >> "$GITHUB_OUTPUT"
 
-      - name: Build and push
+      - name: Build linux/amd64 image for pre-publish verification
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: docker-cfwarp:release-test
+          build-args: |
+            GOST_VERSION=${{ steps.get-gost-version.outputs.GOST_VERSION }}
+            WARP_VERSION=${{ steps.get-warp-client-version.outputs.WARP_VERSION }}
+            COMMIT_SHA=${{ github.sha }}
+            BASE_IMAGE=${{ matrix.variants.base_image }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max,ignore-error=true
+
+      - name: Run image artifact tests (no live WARP daemon)
+        run: ./tests/run.sh build --image docker-cfwarp:release-test --skip-build
+
+      - name: Log into registry ${{ env.REGISTRY }}
+        if: inputs.DRY_RUN != true
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push multi-arch image
+        id: build-push
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           build-args: |
@@ -115,8 +170,40 @@ jobs:
             BASE_IMAGE=${{ matrix.variants.base_image }}
           context: .
           platforms: linux/amd64,linux/arm64
-          push: true
+          push: ${{ inputs.DRY_RUN != true }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max,ignore-error=true
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.get-warp-client-version.outputs.WARP_VERSION }}-${{ steps.get-gost-version.outputs.GOST_VERSION }}
           tags: |
             ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}:${{ matrix.variants.tag_suffix }}latest
             ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}:${{ matrix.variants.tag_suffix }}${{ steps.get-warp-client-version.outputs.WARP_VERSION }}-${{ steps.get-gost-version.outputs.GOST_VERSION }}
             ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}:${{ matrix.variants.tag_suffix }}${{ steps.get-warp-client-version.outputs.WARP_VERSION }}-${{ steps.get-gost-version.outputs.GOST_VERSION }}-${{ github.sha }}
+
+      - name: Write build summary
+        env:
+          DRY_RUN: ${{ inputs.DRY_RUN }}
+          IMAGE_NAME: ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}
+          WARP_VERSION: ${{ steps.get-warp-client-version.outputs.WARP_VERSION }}
+          GOST_VERSION: ${{ steps.get-gost-version.outputs.GOST_VERSION }}
+          TAG_SUFFIX: ${{ matrix.variants.tag_suffix }}
+          COMMIT_SHA: ${{ github.sha }}
+          DIGEST: ${{ steps.build-push.outputs.digest }}
+        run: |
+          {
+            echo "### docker-cfwarp build summary"
+            echo ""
+            echo "- **Published:** $([ "$DRY_RUN" = "true" ] && echo "no (dry run)" || echo "yes")"
+            echo "- **Platforms:** \`linux/amd64, linux/arm64\`"
+            echo "- **WARP version:** \`${WARP_VERSION}\`"
+            echo "- **GOST version:** \`${GOST_VERSION}\`"
+            if [ -n "$DIGEST" ]; then
+              echo "- **Digest:** \`${DIGEST}\`"
+            fi
+            echo "- **Tags:**"
+            echo "  - \`${IMAGE_NAME}:${TAG_SUFFIX}latest\`"
+            echo "  - \`${IMAGE_NAME}:${TAG_SUFFIX}${WARP_VERSION}-${GOST_VERSION}\`"
+            echo "  - \`${IMAGE_NAME}:${TAG_SUFFIX}${WARP_VERSION}-${GOST_VERSION}-${COMMIT_SHA}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

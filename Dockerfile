@@ -6,6 +6,8 @@ ARG BASE_IMAGE=debian:13-slim
 # BuildKit runs this stage under TARGETPLATFORM, so apt resolves the right arch.
 FROM ${BASE_IMAGE} AS fetch-warp
 
+ARG WARP_VERSION=latest
+
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl ca-certificates gnupg && \
     curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg && \
@@ -13,7 +15,16 @@ RUN apt-get update && \
     echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ ${VERSION_CODENAME} main" > /etc/apt/sources.list.d/cloudflare-client.list && \
     apt-get update && \
     mkdir -p /tmp/warp && cd /tmp/warp && \
-    apt-get download cloudflare-warp && \
+    if [ -z "${WARP_VERSION}" ] || [ "${WARP_VERSION}" = "latest" ]; then \
+      apt-get download cloudflare-warp; \
+    else \
+      PKG_VERSION="$(apt-cache madison cloudflare-warp | awk -v v="${WARP_VERSION}" '$3 == v || index($3, v "-") == 1 { print $3; exit }')"; \
+      if [ -z "${PKG_VERSION}" ]; then \
+        echo "Requested WARP_VERSION=${WARP_VERSION} not found in apt repository" >&2; \
+        exit 1; \
+      fi; \
+      apt-get download "cloudflare-warp=${PKG_VERSION}"; \
+    fi && \
     mv cloudflare-warp_*.deb cloudflare-warp.deb
 
 # Stage 2: download the gost binary for the target architecture.
@@ -36,11 +47,13 @@ RUN apt-get update && \
     esac && \
     MAJOR_VERSION=$(echo "${GOST_VERSION}" | cut -d. -f1) && \
     MINOR_VERSION=$(echo "${GOST_VERSION}" | cut -d. -f2) && \
-    # detect if version >= 2.12.0, which uses new filename syntax
+    # detect if version >= 2.12.0, which uses new filename syntax and publishes checksums.txt
     if [ "${MAJOR_VERSION}" -ge 3 ] || [ "${MAJOR_VERSION}" -eq 2 -a "${MINOR_VERSION}" -ge 12 ]; then \
       FILE_NAME="gost_${GOST_VERSION}_linux_${GOARCH}.tar.gz"; \
-      curl -fL "https://github.com/ginuerzh/gost/releases/download/v${GOST_VERSION}/${FILE_NAME}" -o /tmp/gost.tar.gz && \
-      tar -xzf /tmp/gost.tar.gz -C /tmp gost; \
+      curl -fL "https://github.com/ginuerzh/gost/releases/download/v${GOST_VERSION}/${FILE_NAME}" -o "/tmp/${FILE_NAME}" && \
+      curl -fsSL "https://github.com/ginuerzh/gost/releases/download/v${GOST_VERSION}/checksums.txt" -o /tmp/checksums.txt && \
+      (cd /tmp && grep -E "  ${FILE_NAME}\$" checksums.txt | sha256sum -c -) && \
+      tar --no-same-owner -xzf "/tmp/${FILE_NAME}" -C /tmp gost; \
     else \
       FILE_NAME="gost-linux-${LEGACYARCH}-${GOST_VERSION}.gz"; \
       curl -fL "https://github.com/ginuerzh/gost/releases/download/v${GOST_VERSION}/${FILE_NAME}" -o /tmp/gost.gz && \
@@ -91,8 +104,11 @@ RUN apt-get update && \
       sudo \
       zlib1g && \
     dpkg -i --force-depends /tmp/cloudflare-warp.deb; \
-    test -x /usr/bin/warp-svc && \
-    test -x /usr/bin/warp-cli && \
+    for bin in /usr/bin/warp-svc /usr/bin/warp-cli; do \
+      test -x "$bin" && \
+      ldd_out="$(ldd "$bin")" && \
+      ! printf '%s\n' "$ldd_out" | grep -F 'not found'; \
+    done && \
     rm -rf /usr/lib/warp \
            /usr/bin/warp-dex \
            /usr/bin/warp-diag \
@@ -112,8 +128,8 @@ RUN apt-get update && \
 
 COPY entrypoint.sh /entrypoint.sh
 COPY ./healthcheck /healthcheck
-RUN cp /healthcheck/ipcalc /usr/local/bin/ipcalc && \
-    chmod 755 /entrypoint.sh /healthcheck/index.sh /usr/local/bin/ipcalc
+RUN mv /healthcheck/ipcalc /usr/local/bin/ipcalc && \
+    chmod 755 /entrypoint.sh /healthcheck/*.sh /usr/local/bin/ipcalc
 
 USER warp
 
@@ -129,6 +145,12 @@ ENV WARP_ENABLE_NAT=
 # consecutive failed egress checks before the supervisor exits so the container
 # restart policy recovers; 0 disables the egress watchdog
 ENV EGRESS_FAIL_THRESHOLD=8
+# seconds between supervisor egress checks (process liveness is checked every 5s)
+ENV EGRESS_CHECK_INTERVAL=5
+# seconds after starting gost before the supervisor begins egress checks
+ENV EGRESS_GRACE_PERIOD=15
+# trace endpoint used by the healthcheck and supervisor egress watchdog
+ENV WARP_TRACE_URL="https://cloudflare.com/cdn-cgi/trace"
 
 HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
   CMD /healthcheck/index.sh

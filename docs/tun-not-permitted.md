@@ -17,11 +17,9 @@ Thanks [@hugoghx](https://github.com/hugoghx) for [reporting this issue](https:/
 To solve this issue, you need to add the removed rule back to the container. For example:
 
 ```yaml
-version: "3"
-
 services:
   warp:
-    image: caomingjun/warp
+    image: ghcr.io/threatpatrols/docker-cfwarp:latest
     container_name: warp
     restart: always
     # ===== Add the following 2 lines =====
